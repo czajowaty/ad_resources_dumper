@@ -304,7 +304,8 @@ void MainWindow::onVariantSelectionChanged()
         auto portraitImage =
                 loadPortrait(
                     SPEAKERS_INFO[selectedSpeakerIndex_],
-                    portraitVariant);
+                    portraitVariant,
+                    true);
         ui_->textureLabel->setPixmap(QPixmap::fromImage(portraitImage));
         ui_->textureLabel->adjustSize();
     }
