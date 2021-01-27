@@ -38,7 +38,6 @@ MainWindow::MainWindow(QWidget *parent)
     connect(
                 ui_->spinBox, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [this](int) { onVariantSelectionChanged(); });
-    on_action_OpenCdImage_triggered();
 }
 
 MainWindow::~MainWindow()
@@ -56,14 +55,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 void MainWindow::on_action_OpenCdImage_triggered()
 {
-    /*
     auto filePath = QFileDialog::getOpenFileName(
                 this,
                 "Select CD image",
                 lastOpenCdImagePath_,
                 "BIN files (*.bin)");
-                */
-    QString filePath("d:\\Isos\\PSX\\Azure Dreams\\Azure Dreams.bin");
     if (filePath.isEmpty())
     { return; }
     try
