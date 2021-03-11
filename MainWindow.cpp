@@ -1,43 +1,49 @@
 #include "MainWindow.hpp"
 #include "ui_MainWindow.h"
+#include "AdResourceUnpacker.hpp"
 #include "AdResourcesIterator.hpp"
 #include <QCloseEvent>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QProgressDialog>
+#include <QtEndian>
 
 // TODO: remove it
 #include <QDebug>
 
-constexpr MainWindow::SpeakersInfo MainWindow::SPEAKERS_INFO;
+// TODO: subscribe to vram changes
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       ui_{new Ui::MainWindow},
-      virtualPsxRam_(new VirtualPsxRam()),
-      virtualPsxVRam_(new VirtualPsxVRam())
+      adMemoryHandler_{std::make_unique<AdMemoryHandler>()}
 {
     ui_->setupUi(this);
+    ui_->portraitScrollArea->setWidgetResizable(false);
     globalSettings_.beginGroup("main_window");
     resize(globalSettings_.value("size", QSize(1024, 768)).toSize());
     move(globalSettings_.value("pos", QPoint(200, 100)).toPoint());
+    if (globalSettings_.value("is_maximized", false).toBool())
+    { showMaximized(); }
     globalSettings_.endGroup();
     lastOpenCdImagePath_ =
             globalSettings_.value("last_open_cd_image_path").toString();
-    ui_->textureLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    ui_->textureLabel->setScaledContents(false);
     ui_->vramImageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     ui_->vramImageLabel->setScaledContents(false);
     for (auto const& speakerInfo : SPEAKERS_INFO)
-    { ui_->characterListWidget->addItem(speakerInfo.name); }
+    {
+        ui_->characterListWidget->addItem(
+                    QString("%1 (%2)")
+                    .arg(speakerInfo.name)
+                    .arg(static_cast<uint16_t>(speakerInfo.speakerId)));
+    }
     connect(
                 ui_->characterListWidget, &QListWidget::itemSelectionChanged,
                 this, &MainWindow::onCharacterSelectionChanged);
     connect(
                 ui_->variantsListWidget, &QListWidget::itemSelectionChanged,
                 this, &MainWindow::onVariantSelectionChanged);
-    connect(
-                ui_->spinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-                this, [this](int) { onVariantSelectionChanged(); });
+    on_action_OpenCdImage_triggered();
 }
 
 MainWindow::~MainWindow()
@@ -48,6 +54,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     globalSettings_.beginGroup("main_window");
     globalSettings_.setValue("size", size());
     globalSettings_.setValue("pos", pos());
+    globalSettings_.setValue("is_maximized", isMaximized());
     globalSettings_.endGroup();
     globalSettings_.setValue("last_open_cd_image_path", lastOpenCdImagePath_);
     event->accept();
@@ -55,212 +62,129 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 void MainWindow::on_action_OpenCdImage_triggered()
 {
+    /*
     auto filePath = QFileDialog::getOpenFileName(
                 this,
                 "Select CD image",
                 lastOpenCdImagePath_,
                 "BIN files (*.bin)");
+                */
+    QString filePath("d:\\Isos\\PSX\\Azure Dreams\\Azure Dreams.bin");
     if (filePath.isEmpty())
     { return; }
     try
     {
-        binCdImageReader_ = BinCdImageReader::create(filePath);
+        adMemoryHandler_->loadCdImage(filePath);
         lastOpenCdImagePath_ = filePath;
-        virtualPsxRam_->clear();
-        loadSlusTextSection();
-        loadTownResources();
         showVRam();
     }
     catch (QString const& error)
     { QMessageBox::critical(this, "CD image open error", error); }
 }
 
-void MainWindow::loadSlusTextSection()
-{
-    static constexpr uint32_t SLUS_TEXT_SECTION_START_SECTOR = 25;
-    static constexpr uint32_t SLUS_TEXT_SECTION_SIZE = 0x54800;
-    static constexpr PsxRamAddress::Raw SLUS_TEXT_SECTION_LOAD_ADDRESS =
-            0x8002d000;
-    virtualPsxRam_->load(
-                binCdImageReader_->readSectors(
-                    SLUS_TEXT_SECTION_START_SECTOR,
-                    BinCdImageReader::calculateSectorsNumber(
-                        SLUS_TEXT_SECTION_SIZE)),
-                SLUS_TEXT_SECTION_LOAD_ADDRESS);
-}
-
-void MainWindow::loadTownResources()
-{
-    loadGameModeResources(GameMode::InTown);
-    loadTownVRamResources();
-}
-
-void MainWindow::loadGameModeResources(GameMode gameMode)
-{
-    uint32_t gameModeIndex = static_cast<uint32_t>(gameMode);
-    uint32_t sectorsNumber = virtualPsxRam_->readDWord(
-                0x8006ce6c + (gameModeIndex << 2));
-    GameModeData gameModeData;
-    virtualPsxRam_->readRegion(
-                {
-                    0x8006ce44 + (gameModeIndex * sizeof(GameModeData)),
-                    sizeof(GameModeData)
-                },
-                reinterpret_cast<uint8_t*>(&gameModeData));
-    if (gameModeData.memoryLoadInfoAddress.isNull())
-    { return; }
-    MemoryLoadInfo memoryLoadInfo;
-    virtualPsxRam_->readRegion(
-                { gameModeData.memoryLoadInfoAddress, sizeof(MemoryLoadInfo)},
-                reinterpret_cast<uint8_t*>(&memoryLoadInfo));
-    PsxRamAddress memoryLoadInfoAddress = memoryLoadInfo.address;
-    if (memoryLoadInfoAddress.isNull())
-    { throw QString("Address to where load resources is null."); }
-    memoryLoadInfoAddress |= PsxRamConst::KSEG0_ADDRESS;
-    sectorsNumber &= ~0x1ff;
-    sectorsNumber |= memoryLoadInfo.sectorsNumber;
-    virtualPsxRam_->load(
-                binCdImageReader_->readSectors(
-                    memoryLoadInfo.sector,
-                    sectorsNumber),
-                memoryLoadInfoAddress);
-    for (uint32_t i = 0; i < 5; ++i)
-    {
-        QString s;
-        for (uint32_t j = 0; j < 0x10; ++j)
-        {
-            s += QString("%1 ")
-                    .arg(
-                        virtualPsxRam_->readByte(
-                            memoryLoadInfoAddress + i * 0x10 + j),
-                        2,
-                        16,
-                        QChar('0'));
-        }
-        qDebug() << QString("%1: %2").arg(i, 2, 16, QChar('0')).arg(s);
-    }
-}
-
-void MainWindow::loadTownVRamResources()
-{
-    MemoryLoadInfo townResourcesMemoryLoadInfo;
-    virtualPsxRam_->readRegion(
-
-                {0x80080ea0, sizeof(townResourcesMemoryLoadInfo)},
-                reinterpret_cast<uint8_t*>(&townResourcesMemoryLoadInfo));
-    auto townResourcesData = binCdImageReader_->readSectors(
-                townResourcesMemoryLoadInfo.sector,
-                townResourcesMemoryLoadInfo.sectorsNumber);
-    AdResourcesIterator resourcesIterator(townResourcesData);
-    while (resourcesIterator.hasNext())
-    {
-        auto nextResource = resourcesIterator.next();
-        auto const* resourceHeader = nextResource.first;
-        auto const* resourceData = nextResource.second;
-        if (resourceHeader->type == ResourceType::VRamLoadablePackedImage)
-        {
-            loadVRamLoadablePackedImage(
-                        reinterpret_cast<ResourceType1Header const*>(
-                            resourceHeader),
-                        resourceData);
-        }
-        else if (resourceHeader->type == ResourceType::Palette)
-        {
-            loadVRamPalette(
-                        reinterpret_cast<ResourceType2Header const*>(
-                            resourceHeader),
-                        resourceData);
-        }
-        else
-        {
-            throw QString("Unexpected town resource type %1.")
-                    .arg(static_cast<uint16_t>(resourceHeader->type));
-        }
-    }
-}
 
 void MainWindow::showVRam()
 {
-    auto vramImage = virtualPsxVRam_->asImage();
+    auto vramImage = adMemoryHandler_->vram().asImage();
     ui_->vramImageLabel->setPixmap(QPixmap::fromImage(vramImage));
     ui_->vramImageLabel->adjustSize();
 }
 
-void MainWindow::loadVRamLoadablePackedImage(
-        ResourceType1Header const* resourceHeader,
-        uint8_t const* resourceData)
-{
-    auto resourceTexture = unpackResourceTexture(resourceData);
-    virtualPsxVRam_->load(resourceTexture, resourceHeader->rect.toQRect());
-}
-
-QByteArray MainWindow::unpackResourceTexture(uint8_t const* resourceData)
-{
-    QByteArray unpackedResourceTexture;
-    unpackedResourceTexture.resize(0x2000);
-    uint8_t* unpackedResourceData =
-            reinterpret_cast<uint8_t*>(unpackedResourceTexture.data());
-    auto* unpackedResourceDataEnd = unpack(resourceData, unpackedResourceData);
-    auto unpackedDataSize = unpackedResourceDataEnd - unpackedResourceData;
-    if (unpackedDataSize > unpackedResourceTexture.size())
-    {
-        throw QString(
-                    "Too large (0x%1 bytes) resource texture. "
-                    "Max size 0x%2 bytes.")
-                .arg(unpackedDataSize, 0, 16)
-                .arg(unpackedResourceTexture.size());
-    }
-    unpackedResourceTexture.resize(unpackedDataSize);
-    return unpackedResourceTexture;
-}
-
-void MainWindow::loadVRamPalette(
-        ResourceType2Header const* resourceHeader,
-        uint8_t const* resourceData)
-{
-    if (!resourceHeader->flags.shouldCopyToVRam())
-    { return; }
-    using Palette = VirtualPsxVRam::Palette4Bpp;
-    uint16_t palette4BppRawDataSize = Palette::rawDataSize();
-    uint16_t palette4BppSize = Palette::size();
-    QRect paletteRect(
-                resourceHeader->position.x * palette4BppRawDataSize,
-                resourceHeader->position.yOffsetFromY448 + 0x1c0,
-                resourceHeader->numberOf4BppPalettes * palette4BppSize,
-                1);
-    virtualPsxVRam_->load(
-                resourceData,
-                resourceHeader->numberOf4BppPalettes * palette4BppRawDataSize,
-                paletteRect);
-}
-
-
 void MainWindow::on_actionSaveAlImages_triggered()
 {
-    for (auto const& speakerInfo : SPEAKERS_INFO)
+    QString const resultDialogTitle("Save all portraits");
+    QProgressDialog progressDialog(
+                "Saving portraits...",
+                "Cancel",
+                0,
+                SPEAKERS_INFO.size(),
+                this);
+    QVector<QString> errors;
+    for (
+         uint32_t speakerIndex = 0;
+         speakerIndex < SPEAKERS_INFO.size();
+         ++speakerIndex)
     {
-        for (
-             uint32_t portraitVariant = 0;
-             portraitVariant < speakerInfo.variantsNumber;
-             ++portraitVariant)
+        auto const& speakerInfo = SPEAKERS_INFO[speakerIndex];
+        try
         {
-            try
+            auto characterPortraitsData =
+                    adMemoryHandler_->readCharacterPortraitsData(
+                        speakerInfo.speakerId);
+            for (
+                 uint32_t portraitVariant = 0;
+                 portraitVariant < speakerInfo.variantsNumber;
+                 ++portraitVariant)
             {
-                auto portraitImage = loadPortrait(speakerInfo, portraitVariant);
-                if (!portraitImage.isNull())
+                auto portraitData =
+                        characterPortraitsData[portraitVariant].portraitData;
+                auto characterPortraitResource =
+                        adMemoryHandler_->loadCharacterPortrait(portraitData);
+                auto const& animationFrames =
+                        characterPortraitResource.animationFrames;
+                for (int frame = 0; frame < animationFrames.size(); ++frame)
                 {
-                    portraitImage.save(
-                                QString("%1_%2.png")
-                                .arg(speakerInfo.name)
-                                .arg(portraitVariant),
-                                "PNG");
+                    auto const& animationFrame =
+                            characterPortraitResource.animationFrames[frame];
+                    auto const& graphicSeries = animationFrame.second;
+                    auto fullPortraitImage =
+                            adMemoryHandler_->combinePortraitGraphicSeries(
+                                graphicSeries,
+                                portraitData);
+                    QString baseName =
+                            QString("%1_variant%2_frame%3")
+                            .arg(speakerInfo.name)
+                            .arg(portraitVariant)
+                            .arg(frame);
+                    QString extension(".png");
+                    fullPortraitImage.save(baseName + extension);
+                    if (graphicSeries.size() > 1)
+                    {
+                        for (
+                             int elementIndex = 0;
+                             elementIndex < graphicSeries.size();
+                             ++elementIndex)
+                        {
+                            auto graphicElementImage =
+                                    graphicSeries[elementIndex].second;
+                            graphicElementImage.save(
+                                        QString("%1_element%2%3")
+                                        .arg(baseName)
+                                        .arg(elementIndex)
+                                        .arg(extension));
+                        }
+                    }
                 }
             }
-            catch (QString const&)
-            {
-                // TODO: maybe add error message at the end of saving
-            }
+            progressDialog.setValue(speakerIndex);
+            if (progressDialog.wasCanceled())
+            { return; }
         }
+        catch (QString const& error)
+        { errors.append(error); }
+    }
+    if (errors.isEmpty())
+    {
+        QMessageBox::information(
+                    this,
+                    resultDialogTitle,
+                    "Saving portrait finished successfully.");
+    }
+    else
+    {
+        auto it = errors.begin();
+        QString errorsString(*it);
+        ++it;
+        while (it != errors.end())
+        {
+            errorsString += '\n';
+            errorsString += *it;
+            ++it;
+        }
+        QMessageBox::warning(
+                    this,
+                    resultDialogTitle,
+                    "Could not save all portraits.\n" + errorsString);
     }
 }
 
@@ -283,37 +207,45 @@ void MainWindow::onCharacterSelectionChanged()
         return;
     }
     auto const& speakerInfo = SPEAKERS_INFO[selectedSpeakerIndex_];
+    try
+    {
+        selectedCharacterPortraitsData_ =
+                adMemoryHandler_->readCharacterPortraitsData(
+                    speakerInfo.speakerId);
+    }
+    catch (QString const& error)
+    {
+        QMessageBox::critical(
+                    this,
+                    "Character portraits data load error",
+                    error);
+        return;
+    }
     for (
-         uint32_t variantIndex = 0;
-         variantIndex < speakerInfo.variantsNumber;
+         int variantIndex = 0;
+         variantIndex < selectedCharacterPortraitsData_.size();
          ++variantIndex)
     { ui_->variantsListWidget->addItem(QString::number(variantIndex)); }
 }
 
 void MainWindow::onVariantSelectionChanged()
 {
+    ui_->portraitInfoTextEdit->setText("");
     auto selectedItems = ui_->variantsListWidget->selectedItems();
     if (selectedItems.empty())
     {
         onVariantSelectionCleared();
         return;
     }
-    auto portraitVariant = ui_->variantsListWidget->row(selectedItems.first());
+    clearPortrait();
     try
     {
-        auto portraitImage =
-                loadPortrait(
-                    SPEAKERS_INFO[selectedSpeakerIndex_],
-                    portraitVariant,
-                    true);
-        ui_->textureLabel->setPixmap(QPixmap::fromImage(portraitImage));
-        ui_->textureLabel->adjustSize();
+        auto portraitVariant =
+                ui_->variantsListWidget->row(selectedItems.first());
+        loadPortraitVariant(portraitVariant);
     }
     catch (QString const& error)
-    {
-        QMessageBox::warning(this, "Load portrait", error);
-        clearPortrait();
-    }
+    { QMessageBox::warning(this, "Load portrait", error); }
 }
 
 void MainWindow::onVariantSelectionCleared()
@@ -321,209 +253,166 @@ void MainWindow::onVariantSelectionCleared()
 
 void MainWindow::clearPortrait()
 {
-    ui_->textureLabel->setPixmap(QPixmap());
+    auto portraitWidget = ui_->portraitScrollArea->takeWidget();
+    if (portraitWidget != nullptr)
+    { delete portraitWidget; }
     ui_->portraitInfoTextEdit->setText("");
 }
 
-QImage MainWindow::loadPortrait(
-        SpeakerInfo speakerInfo,
-        int portraitVariant,
-        bool updatePortraitInfo)
+void MainWindow::loadPortraitVariant(int portraitVariant)
 {
     auto insertPortraitInfoLine = [=](QString const& text) {
-        if (!updatePortraitInfo)
-        { return; }
         ui_->portraitInfoTextEdit->insertPlainText(text);
         ui_->portraitInfoTextEdit->insertPlainText("\n");
     };
 
-    if (updatePortraitInfo)
-    { ui_->portraitInfoTextEdit->setText(""); }
-    auto speakerPortraitIndex = getSpeakerPortraitIndex(speakerInfo.speakerId);
-    if (speakerPortraitIndex == INVALID_SPEAKER_PORTRAIT_INDEX)
-    { throw QString("'%1' does not have portrait.").arg(speakerInfo.name); }
-    QString portraitInfoText;
-    PsxRamAddress portraitDataTableAddressAddress =
-            0x8006b1a8 + speakerPortraitIndex * sizeof(PsxRamAddress);
+    if (portraitVariant >= selectedCharacterPortraitsData_.size())
+    {
+        throw QString(
+                    "Selected portrait variant (%1) is greater than number of "
+                    "variants (%2)")
+                .arg(portraitVariant)
+                .arg(selectedCharacterPortraitsData_.size());
+        return;
+    }
+    auto const& characterPortraitData =
+            selectedCharacterPortraitsData_[portraitVariant];
+    auto* widget = new QWidget(ui_->portraitScrollArea);
+    auto createLabel = [=](QString const& text = "") {
+        auto* label = new QLabel(text, widget);
+        label->setFrameShadow(QFrame::Plain);
+        label->setFrameShape(QFrame::Box);
+        return label;
+    };
+    auto* layout = new QGridLayout(widget);
+    layout->setSpacing(0);
+    widget->setLayout(layout);
+    layout->addWidget(createLabel("Frame"), 0, 0);
+    layout->addWidget(createLabel("Full image"), 0, 1);
+    layout->addWidget(createLabel("Image parts"), 0, 2);
     insertPortraitInfoLine(
-                "Address of portrait data table address: " +
-                toQString(portraitDataTableAddressAddress));
-    auto portraitDataTableAddress = virtualPsxRam_->readAddress(
-                portraitDataTableAddressAddress);
-    if (portraitDataTableAddress.isNull())
-    { throw QString("'%1' does not have portrait.").arg(speakerInfo.name); }
-    PsxRamAddress portraitDataAddress =
-            portraitDataTableAddress + (portraitVariant * sizeof(PortraitData));
-    insertPortraitInfoLine(
-                "Portrait data address: " + toQString(portraitDataAddress));
-    PortraitData portraitData;
-    virtualPsxRam_->readRegion(
-                {portraitDataAddress, sizeof(portraitData)},
-                reinterpret_cast<uint8_t*>(&portraitData));
+                "Portrait data address: " +
+                toQString(characterPortraitData.portraitDataAddress));
+    auto const& portraitData = characterPortraitData.portraitData;
     insertPortraitInfoLine(
                 "Memory load info address: " +
                 toQString(portraitData.portraitMemoryLoadInfoAddress));
     insertPortraitInfoLine(
                 "Animation address: " +
                 toQString(portraitData.animationAddress));
-    if (portraitData.portraitMemoryLoadInfoAddress.isNull())
-    {
-        throw QString("'%1' does not have portrait for variant %2.")
-                .arg(speakerInfo.name)
-                .arg(portraitVariant);
-    }
-    MemoryLoadInfo memoryLoadInfo;
-    virtualPsxRam_->readRegion(
-                {
-                    portraitData.portraitMemoryLoadInfoAddress,
-                    sizeof(memoryLoadInfo)
-                },
-                reinterpret_cast<uint8_t*>(&memoryLoadInfo));
-    insertPortraitInfoLine("Memory load info:");
-    insertPortraitInfoLine(
-                QString("  Sector: 0x%1").arg(memoryLoadInfo.sector, 0, 16));
-    insertPortraitInfoLine(
-                QString("  Sectors number: 0x%1")
-                .arg(memoryLoadInfo.sectorsNumber, 0, 16));
-    Animation animation;
-    virtualPsxRam_->readRegion(
-                { portraitData.animationAddress, sizeof(animation) },
-                reinterpret_cast<uint8_t*>(&animation));
-    insertPortraitInfoLine("Animation:");
-    insertPortraitInfoLine(QString("  Duration: %1").arg(animation.duration));
-    insertPortraitInfoLine(
-                "  Graphic address: " + toQString(animation.graphicAddress));
-    uint32_t animationStep = ui_->spinBox->value();
-    PsxRamAddress graphicAddress = virtualPsxRam_->readAddress(
-                portraitData.animationAddress + 4u + animationStep * 8);
-    Graphic graphic;
-    virtualPsxRam_->readRegion(
-                //{ animation.graphicAddress, sizeof(graphic) },
-                { graphicAddress, sizeof(graphic) },
-                reinterpret_cast<uint8_t*>(&graphic));
-    auto const& texpage = graphic.texpage;
-    insertPortraitInfoLine("Graphic:");
-    insertPortraitInfoLine(
-                QString("  Effects: 0x%1").arg(graphic.effects, 0, 16));
-    insertPortraitInfoLine(
-                QString("  BPP: %1").arg(toQString(texpage.texpageBpp())));
-    insertPortraitInfoLine(
-                QString("  Texture page: 0x%1, 0x%2")
-                .arg(texpage.x, 0, 16)
-                .arg(texpage.y, 0, 16));
-    insertPortraitInfoLine(
-                QString("  CLUT coordinates: 0x%1, 0x%2")
-                .arg(graphic.clut.x)
-                .arg(graphic.clut.y));
-    insertPortraitInfoLine(
-                QString("  Position: 0x%1, 0x%2")
-                .arg(graphic.xOffset, 0, 16)
-                .arg(graphic.yOffset, 0, 16));
-    insertPortraitInfoLine(
-                QString(
-                    "  In-texture page bounds: x=0x%1, y=0x%2, w=0x%3, h=0x%4")
-                .arg(graphic.xOffsetInTexpage, 0, 16)
-                .arg(graphic.yOffsetInTexpage, 0, 16)
-                .arg(graphic.width, 0, 16)
-                .arg(graphic.height, 0, 16));
-    auto vramPortraitRect = virtualPsxVRam_->calculateVRamRect(graphic);
-    insertPortraitInfoLine(
-                QString("  VRam bounds: x=0x%1, y=0x%2, w=0x%3, h=0x%4")
-                .arg(vramPortraitRect.x(), 0, 16)
-                .arg(vramPortraitRect.y(), 0, 16)
-                .arg(vramPortraitRect.width(), 0, 16)
-                .arg(vramPortraitRect.height(), 0, 16));
     try
-    { loadPortraitImageResource(memoryLoadInfo); }
-    catch (QString const& error)
     {
-        throw QString("Error while loading portrait image resource. %1.")
-                .arg(error);
-    }
-    try
-    { return loadGraphic(graphic); }
-    catch (QString const& error)
-    { throw QString("Error while reading portrait image.").arg(error); }
-}
-
-uint8_t MainWindow::getSpeakerPortraitIndex(AdSpeakerId speakerId)
-{
-    PsxRamAddress speakersWithPortraitsAddress = 0x8006b1ec;
-    for (uint8_t index = 0; index < 18; ++index)
-    {
-        auto portraitSpeakerId =
-                virtualPsxRam_->readByte(
-                    speakersWithPortraitsAddress.raw() + index);
-        if (speakerId == static_cast<AdSpeakerId>(portraitSpeakerId))
-        { return index; }
-    }
-    return INVALID_SPEAKER_PORTRAIT_INDEX;
-}
-
-void MainWindow::loadPortraitImageResource(
-        MemoryLoadInfo const& memoryLoadInfo)
-{
-    auto portraitTextureResource = binCdImageReader_->readSectors(
-                memoryLoadInfo.sector,
-                memoryLoadInfo.sectorsNumber);
-    AdResourcesIterator resourcesIterator(portraitTextureResource);
-    int portraitImageIndex = 0;
-    while (resourcesIterator.hasNext())
-    {
-        if (portraitImageIndex > 2)
+        auto characterPortraitResource =
+            adMemoryHandler_->loadCharacterPortrait(portraitData);
+        auto const& memoryLoadInfo =
+                characterPortraitResource.resourcesMemoryLoadInfo;
+        insertPortraitInfoLine("Memory load info:");
+        insertPortraitInfoLine(
+                    "  Address: " + toQString(memoryLoadInfo.address));
+        insertPortraitInfoLine(
+                    QString("  Sector: 0x%1")
+                    .arg(memoryLoadInfo.sector, 0, 16));
+        insertPortraitInfoLine(
+                    QString("  Sectors number: 0x%1")
+                    .arg(memoryLoadInfo.sectorsNumber, 0, 16));
+        insertPortraitInfoLine(
+                    QString("Graphics offset halved: %1")
+                    .arg(
+                        characterPortraitResource.graphicsOffsetHalved ?
+                            "true" :
+                            "false"));
+        auto const& animationFrames = characterPortraitResource.animationFrames;
+        for (int frame = 0; frame < animationFrames.size(); ++frame)
         {
-            throw QString(
-                        "Max number of resources (2) per portrait resources "
-                        "excedeed.");
+            insertPortraitInfoLine(QString("Animation frame %1:").arg(frame));
+            auto const& animationFrame = animationFrames[frame];
+            auto const& animation = animationFrame.first;
+            insertPortraitInfoLine(
+                        QString("  Duration: %1")
+                        .arg(animation.duration));
+            insertPortraitInfoLine(
+                        "  Graphic address: " +
+                        toQString(animation.graphicAddress));
+            auto portraitImage =
+                    adMemoryHandler_->combineGraphicSeries(
+                        animationFrame.second,
+                        characterPortraitResource.graphicsOffsetHalved);
+            insertPortraitInfoLine(
+                        QString("  Full image size: w=%1, h=%2")
+                        .arg(portraitImage.width())
+                        .arg(portraitImage.height()));
+            auto* frameLabel = createLabel(QString::number(frame));
+            frameLabel->setAlignment(Qt::AlignCenter);
+            frameLabel->setMargin(5);
+            layout->addWidget(frameLabel, frame + 1, 0);
+            auto* fullImageLabel = createLabel();
+            fullImageLabel->setPixmap(QPixmap::fromImage(portraitImage));
+            layout->addWidget(fullImageLabel, frame + 1, 1);
+            auto* imagePartsFrame = new QFrame(widget);
+            imagePartsFrame->setFrameShadow(QFrame::Plain);
+            imagePartsFrame->setFrameShape(QFrame::Box);
+            auto* imagePartsLayout = new QHBoxLayout(imagePartsFrame);
+            auto const& graphicsSeries = animationFrame.second;
+            insertPortraitInfoLine("  Image parts:");
+            for (int element = 0; element < graphicsSeries.size(); ++element)
+            {
+                insertPortraitInfoLine(QString("    Part %1:").arg(element));
+                auto const& graphicsSeriesElement = graphicsSeries[element];
+                auto const& graphic = graphicsSeriesElement.first;
+                auto const& texpage = graphic.texpage;
+                insertPortraitInfoLine(
+                            "      Flags: " + flagsToQString(graphic));
+                insertPortraitInfoLine(
+                            QString("      BPP: %1")
+                            .arg(toQString(texpage.texpageBpp())));
+                insertPortraitInfoLine(
+                            QString("      Texture page: 0x%1, 0x%2")
+                            .arg(texpage.x, 0, 16)
+                            .arg(texpage.y, 0, 16));
+                insertPortraitInfoLine(
+                            QString("      CLUT coordinates: 0x%1, 0x%2")
+                            .arg(graphic.clut.x)
+                            .arg(graphic.clut.y));
+                insertPortraitInfoLine(
+                            QString("      Position: %1 (0x%2), %3 (0x%4)")
+                            .arg(graphic.xOffset)
+                            .arg(static_cast<uint8_t>(graphic.xOffset), 0, 16)
+                            .arg(graphic.yOffset)
+                            .arg(static_cast<uint8_t>(graphic.yOffset), 0, 16));
+                insertPortraitInfoLine(
+                            QString(
+                                "      In-texture page bounds: x=0x%1, y=0x%2, "
+                                "w=0x%3, h=0x%4")
+                            .arg(graphic.xOffsetInTexpage, 0, 16)
+                            .arg(graphic.yOffsetInTexpage, 0, 16)
+                            .arg(graphic.width, 0, 16)
+                            .arg(graphic.height, 0, 16));
+                auto vramPortraitRect =
+                        VirtualPsxVRam::calculateVRamRect(graphic);
+                insertPortraitInfoLine(
+                            QString(
+                                "      VRam bounds: x=0x%1, y=0x%2, "
+                                "w=0x%3, h=0x%4")
+                            .arg(vramPortraitRect.x(), 0, 16)
+                            .arg(vramPortraitRect.y(), 0, 16)
+                            .arg(vramPortraitRect.width(), 0, 16)
+                            .arg(vramPortraitRect.height(), 0, 16));
+                auto* imagePartLabel = new QLabel(imagePartsFrame);
+                imagePartLabel->setPixmap(
+                            QPixmap::fromImage(graphicsSeriesElement.second));
+                imagePartLabel->setToolTip(QString("Part %1").arg(element));
+                imagePartsLayout->addWidget(imagePartLabel);
+            }
+            imagePartsLayout->addStretch();
+            imagePartsFrame->setLayout(imagePartsLayout);
+            layout->addWidget(imagePartsFrame, frame + 1, 2);
         }
-        Rect portraitTextureRect;
-        virtualPsxRam_->readRegion(
-                    {
-                        0x8006b220 +
-                        portraitImageIndex * sizeof(portraitTextureRect),
-                        sizeof (portraitTextureRect)
-                    },
-                    reinterpret_cast<uint8_t*>(&portraitTextureRect));
-        auto nextResource = resourcesIterator.next();
-        auto const* resourceHeader = nextResource.first;
-        auto const* resourceData = nextResource.second;
-        if (resourceHeader->type == ResourceType::PackedImage)
-        {
-            auto resourceTexture = unpackResourceTexture(resourceData);
-            virtualPsxVRam_->load(
-                        resourceTexture,
-                        portraitTextureRect.toQRect());
-        }
-        else
-        {
-            throw QString("Unexpected portrait resource type %1.")
-                    .arg(static_cast<uint16_t>(resourceHeader->type));
-        }
-        ++portraitImageIndex;
+        ui_->portraitScrollArea->setWidget(widget);
     }
-    showVRam();
-}
-
-QImage MainWindow::loadGraphic(Graphic const& graphic)
-{
-    switch (graphic.texpage.texpageBpp())
+    catch (...)
     {
-    case TexpageBpp::BPP_4:
-    {
-        VirtualPsxVRam::Palette4Bpp palette;
-        virtualPsxVRam_->read4BppPalette(graphic.clut, palette);
-        return virtualPsxVRam_->read4BppTexture(graphic, &palette);
-    }
-    case TexpageBpp::BPP_8:
-    {
-        VirtualPsxVRam::Palette8Bpp palette;
-        virtualPsxVRam_->read8BppPalette(graphic.clut, palette);
-        return virtualPsxVRam_->read8BppTexture(graphic, &palette);
-    }
-    case TexpageBpp::BPP_15:
-        return virtualPsxVRam_->read16BppTexture(graphic);
-    default:
-        throw QString("Unknown graphic Bpp (%1).").arg(graphic.texpage.bpp);
+        delete widget;
+        throw;
     }
 }
 
@@ -545,87 +434,168 @@ QString MainWindow::toQString(TexpageBpp bpp)
     }
 }
 
-uint8_t* MainWindow::unpack(uint8_t const* src, uint8_t* dest)
+QString MainWindow::flagsToQString(Graphic const& graphic)
 {
-  uint8_t bVar1;
+    QString flagsString;
+    GraphicFlags mask{GraphicFlags::None};
+    auto appendFlagString = [&](QString const& flagString) {
+        if (!flagsString.isEmpty())
+        { flagsString += '|'; }
+        flagsString += flagString;
+    };
+    auto processFlag = [&](GraphicFlags flag, QString const& flagString) {
+        if (graphic.hasFlags(flag))
+        {
+            mask = mask | flag;
+            appendFlagString(flagString);
+        }
+    };
+    processFlag(GraphicFlags::FlipHorizontally, "FlipHorizontally");
+    processFlag(GraphicFlags::FlipVertically, "FlipVertically");
+    processFlag(GraphicFlags::PartOfSeries, "PartOfSeries");
+    processFlag(GraphicFlags::SeriesEnd, "SeriesEnd");
+    auto unprocessedFlags = graphic.flags ^ mask;
+    if (unprocessedFlags != GraphicFlags::None)
+    {
+        appendFlagString(
+                    QString("0x%1")
+                    .arg(static_cast<uint8_t>(unprocessedFlags)));
+    }
+    return flagsString;
+}
+
+uint8_t* MainWindow::unpack2(uint8_t const* src, uint8_t* dest)
+{
   uint16_t uVar2;
   int straightBytesToReadCount;
   uint8_t const* nextSrc;
-  uint32_t uVar3;
-  uint32_t valueRead;
+  uint16_t copyFromDestOffset;
+  uint8_t valueRead;
   int index;
 
   valueRead = 0;
   index = 1;
   do {
     while( true ) {
-      index = index + -1;
+      //decrease read bit counter
+      --index;
       nextSrc = src;
+      // if read all bits, read next byte
       if (index == 0) {
-        valueRead = (uint32_t)*src;
+        valueRead = *src;
         nextSrc = src + 1;
         index = 8;
       }
+      // if LS bit is 1, break the loop
       if ((valueRead & 1) != 0) break;
+      // set valueRead to nextBit
       valueRead = valueRead >> 1;
+
+      // copy byte from nextSrc to dest
+      // set source to after copied byte
       src = nextSrc + 1;
       *dest = *nextSrc;
       dest = dest + 1;
     }
-    index = index + -1;
-    valueRead = valueRead >> 1;
+
+    //decrease read bit counter and read next bit
+    --index;
+    valueRead >>= 1;
+    // if read all bits, read next byte
     if (index == 0) {
-      valueRead = (uint32_t)*nextSrc;
+      valueRead = *nextSrc;
       nextSrc = nextSrc + 1;
       index = 8;
     }
+
+    // if LS bit is 0...
     if ((valueRead & 1) == 0) {
-      uVar2 = (nextSrc[0] << 8) | nextSrc[1];
-      valueRead = valueRead >> 1;
+      // Header
+      // 12 bits of negative offset to copy from dest
+      // if next 4 bits are non-zero, that's number of bytes to read - 2
+      // else next 8 bits are number of bytes to read - 1
+      //uVar2 = (nextSrc[0] << 8) | nextSrc[1];
+      uVar2 = qFromBigEndian<uint16_t>(nextSrc);
+      // read next bit
+      valueRead >>= 1;
       if (uVar2 == 0) {
         return dest;
       }
+      // move src by 2 bytes, as 2 bytes were read to set uVar2
       src = nextSrc + 2;
-      if ((nextSrc[1] & 0xf) == 0) {
-        bVar1 = *src;
+      //if ((nextSrc[1] & 0xf) == 0) {
+      if ((uVar2 & 0xf) == 0) {
+        straightBytesToReadCount = *src + 1;
         src = nextSrc + 3;
-        straightBytesToReadCount = (uint32_t)bVar1 + 1;
       }
       else {
-        straightBytesToReadCount = ((uint32_t)uVar2 & 0xf) + 2;
+        straightBytesToReadCount = (uVar2 & 0xf) + 2;
       }
-      uVar3 = (uint32_t)(uVar2 >> 4);
+      copyFromDestOffset = (uint32_t)(uVar2 >> 4);
     }
-    else {
-      index = index + -1;
-      valueRead = valueRead >> 1;
+    else { // if LS bit is 1
+      // next 2 bits number of bytes to read - 2
+
+      //decrease read bit counter and read next bit
+      --index;
+      valueRead >>= 1;
+
+      // if read all bits, read next byte
       if (index == 0) {
-        valueRead = (uint32_t)*nextSrc;
+        valueRead = *nextSrc;
         nextSrc = nextSrc + 1;
         index = 8;
       }
-      index = index + -1;
-      uVar3 = valueRead >> 1;
+
+      //decrease read bit counter and read next bit
+      --index;
+      copyFromDestOffset = valueRead >> 1;
+      // if read all bits, read next byte
       if (index == 0) {
-        uVar3 = (uint32_t)*nextSrc;
+        copyFromDestOffset = *nextSrc;
         nextSrc = nextSrc + 1;
         index = 8;
       }
-      straightBytesToReadCount = (valueRead & 1) * 2 + 2 + (uVar3 & 1);
-      valueRead = uVar3 >> 1;
-      uVar3 = (uint32_t)*nextSrc;
+
+      straightBytesToReadCount = (valueRead & 1) * 2 + (copyFromDestOffset & 1) + 2;
+
+      valueRead = copyFromDestOffset >> 1;
+      // next 8 bits is negative offset to copy from dest
+      // if offset is 0, it means offset is 0x100
+      copyFromDestOffset = *nextSrc;
       src = nextSrc + 1;
-      if (*nextSrc == 0) {
-        uVar3 = 0x100;
+      if (copyFromDestOffset == 0) {
+        copyFromDestOffset = 0x100;
       }
     }
-    nextSrc = dest + -uVar3;
+
+    // Set copy src address to dest - uVar3
+    nextSrc = dest - copyFromDestOffset;
+
+    /*
+    if (straightBytesToReadCount > 0)
+    {
+        std::copy(nextSrc, nextSrc + straightBytesToReadCount, dest);
+        nextSrc += straightBytesToReadCount;
+        dest += straightBytesToReadCount;
+        // TODO: might not be needed
+        straightBytesToReadCount = 0;
+    }
+    */
+    for (
+         ;
+         straightBytesToReadCount > 0;
+         --straightBytesToReadCount, ++nextSrc, ++dest)
+    { *dest = *nextSrc; }
+    /*
     while (straightBytesToReadCount != 0) {
       bVar1 = *nextSrc;
-      nextSrc = nextSrc + 1;
-      straightBytesToReadCount = straightBytesToReadCount + -1;
+      ++nextSrc;
+      --straightBytesToReadCount;
       *dest = bVar1;
-      dest = dest + 1;
+      ++dest;
     }
+    */
+
   } while( true );
 }

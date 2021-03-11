@@ -87,13 +87,13 @@ public:
             Graphic const& graphic,
             Palette4Bpp const* palette) const;
     QImage read4BppTexture(QRect const& rect, Palette4Bpp const* palette) const;
-    QRect calculateVRamRect(Graphic const& graphic) const;
     void read4BppPalette(Clut const& clut, Palette4Bpp& palette) const;
     void read4BppPalette(QPoint const& point, Palette4Bpp& palette) const;
     void read8BppPalette(Clut const& clut, Palette8Bpp& palette) const;
     void read8BppPalette(QPoint const& point, Palette8Bpp& palette) const;
     void load(QByteArray const& data, QRect const& rect);
     void load(uint8_t const* data, uint32_t dataSize, QRect const& rect);
+    static QRect calculateVRamRect(Graphic const& graphic);
 
 private:
     template <std::size_t PALETTE_SIZE>
@@ -127,8 +127,6 @@ private:
         }
     }
     void assertTextureDepth(Texpage const& texpage, TexpageBpp expected) const;
-    QPoint calculateTextureVRamPoint(Graphic const& graphic) const;
-    uint8_t inTextureXShift(TexpageBpp bpp) const;
     QPoint clutToVRamPoint(Clut const& clut) const;
     uint8_t const* pixelAddress(int x, int y) const;
     uint8_t const* scanLine(int y) const;
@@ -141,6 +139,8 @@ private:
     void throwUninitializedRectError(
             QRect const& rect,
             QString const& readType) const;
+    static uint8_t inTextureXShift(TexpageBpp bpp);
+    static QPoint calculateTextureVRamPoint(Graphic const& graphic);
 
     PsxVRamBuffer vram_;
     QVector<QRect> initializedRects_;

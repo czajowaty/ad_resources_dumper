@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+static constexpr uint8_t BITS_IN_BYTE = 8;
+
 inline constexpr uint32_t valuesInBits(uint8_t bits)
 { return 1 << bits; }
 

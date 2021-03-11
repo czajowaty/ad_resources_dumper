@@ -8,9 +8,10 @@ class BinCdImageReader : public QObject
 {
     static constexpr uint32_t SECTOR_SIZE = 0x930;
     static constexpr uint32_t DATA_IN_SECTOR_OFFSET = 0x18;
-    static constexpr uint32_t DATA_IN_SECTOR_SIZE = 0x800;
 
 public:
+    static constexpr uint32_t DATA_IN_SECTOR_SIZE = 0x800;
+
     static std::unique_ptr<BinCdImageReader> create(QString const& filePath);
 
     static uint32_t calculateSectorsNumber(uint32_t dataSize);

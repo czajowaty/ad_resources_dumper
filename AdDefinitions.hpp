@@ -92,11 +92,18 @@ struct ResourceType3Header : ResourceHeader
     uint32_t unpackedDataOffset;
 };
 
+enum class AnimationFrameType : uint16_t
+{
+    NoAnimation = 0,
+    LastFrame = 1,
+    NotLastFrame = 2,
+};
+
 struct Animation
 {
     uint8_t duration;
     uint8_t padding;
-    uint16_t padding2;
+    AnimationFrameType frameType;
     PsxRamAddress graphicAddress;
 };
 
@@ -129,18 +136,34 @@ struct Texpage
     { return static_cast<TexpageBpp>(bpp); }
 };
 
+enum class GraphicFlags : uint8_t
+{
+    None = 0x0,
+    FlipHorizontally = 0x1,
+    FlipVertically = 0x2,
+    PartOfSeries = 0x40,
+    SeriesEnd = 0x80
+};
+
+GraphicFlags operator|(GraphicFlags one, GraphicFlags other);
+GraphicFlags operator&(GraphicFlags one, GraphicFlags other);
+GraphicFlags operator^(GraphicFlags one, GraphicFlags other);
+
 struct Graphic
 {
-    uint8_t effects;
+    GraphicFlags flags;
     uint8_t padding;
-    uint8_t xOffset;
-    uint8_t yOffset;
+    int8_t xOffset;
+    int8_t yOffset;
     Texpage texpage;
     Clut clut;
     uint8_t xOffsetInTexpage;
     uint8_t yOffsetInTexpage;
     uint8_t width;
     uint8_t height;
+
+    bool hasFlags(GraphicFlags expectedflags) const
+    { return (flags & expectedflags) == expectedflags; }
 };
 
 #endif // ADDEFINITIONS_HPP

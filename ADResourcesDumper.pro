@@ -16,8 +16,12 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    AdDefinitions.cpp \
+    AdMemoryHandler.cpp \
+    AdResourceUnpacker.cpp \
     AdResourcesIterator.cpp \
     BinCdImageReader.cpp \
+    BitsReader.cpp \
     VirtualPsxRam.cpp \
     VirtualPsxVRam.cpp \
     main.cpp \
@@ -25,15 +29,19 @@ SOURCES += \
 
 HEADERS += \
     AdDefinitions.hpp \
+    AdMemoryHandler.hpp \
+    AdResourceUnpacker.hpp \
     AdResourcesIterator.hpp \
     AdSpeakerId.hpp \
     BinCdImageReader.hpp \
     BitsHelper.hpp \
+    BitsReader.hpp \
     MainWindow.hpp \
     MemoryAddress.hpp \
     PsxRamAddress.hpp \
     PsxRamConst.hpp \
     PsxVRamConst.hpp \
+    QLabelWithMouseEvents.hpp \
     VirtualPsxRam.hpp \
     VirtualPsxVRam.hpp
 

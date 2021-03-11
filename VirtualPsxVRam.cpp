@@ -145,14 +145,6 @@ QImage VirtualPsxVRam::read4BppTexture(
     return image;
 }
 
-QRect VirtualPsxVRam::calculateVRamRect(Graphic const& graphic) const
-{
-    auto xShift = inTextureXShift(graphic.texpage.texpageBpp());
-    return QRect(
-        calculateTextureVRamPoint(graphic),
-        QSize(graphic.width >> xShift, graphic.height));
-}
-
 QImage VirtualPsxVRam::readTexture(
         Graphic const& graphic,
         TexpageBpp expectedBpp,
@@ -176,28 +168,6 @@ void VirtualPsxVRam::assertTextureDepth(
                 .arg(static_cast<uint16_t>(expected))
                 .arg(static_cast<uint16_t>(texpage.texpageBpp()));
     }
-}
-
-QPoint VirtualPsxVRam::calculateTextureVRamPoint(Graphic const& graphic) const
-{
-    auto const& texpage = graphic.texpage;
-    QPoint point(
-                texpage.x << PsxVRamConst::TEXTURE_PAGE_X_SHIFT,
-                texpage.y << PsxVRamConst::TEXTURE_PAGE_Y_SHIFT);
-    point.rx() +=
-            graphic.xOffsetInTexpage >> inTextureXShift(texpage.texpageBpp());
-    point.ry() += graphic.yOffsetInTexpage;
-    return point;
-}
-
-uint8_t VirtualPsxVRam::inTextureXShift(TexpageBpp bpp) const
-{
-    if (bpp == TexpageBpp::BPP_4)
-    { return 2; }
-    else if (bpp == TexpageBpp::BPP_8)
-    { return 1; }
-    else
-    { return 0; }
 }
 
 void VirtualPsxVRam::read4BppPalette(
@@ -350,4 +320,34 @@ void VirtualPsxVRam::throwUninitializedRectError(
             .arg(rect.top())
             .arg(rect.right())
             .arg(rect.bottom());
+}
+
+QRect VirtualPsxVRam::calculateVRamRect(Graphic const& graphic)
+{
+    auto xShift = inTextureXShift(graphic.texpage.texpageBpp());
+    return QRect(
+        calculateTextureVRamPoint(graphic),
+        QSize(graphic.width >> xShift, graphic.height));
+}
+
+uint8_t VirtualPsxVRam::inTextureXShift(TexpageBpp bpp)
+{
+    if (bpp == TexpageBpp::BPP_4)
+    { return 2; }
+    else if (bpp == TexpageBpp::BPP_8)
+    { return 1; }
+    else
+    { return 0; }
+}
+
+QPoint VirtualPsxVRam::calculateTextureVRamPoint(Graphic const& graphic)
+{
+    auto const& texpage = graphic.texpage;
+    QPoint point(
+                texpage.x << PsxVRamConst::TEXTURE_PAGE_X_SHIFT,
+                texpage.y << PsxVRamConst::TEXTURE_PAGE_Y_SHIFT);
+    point.rx() +=
+            graphic.xOffsetInTexpage >> inTextureXShift(texpage.texpageBpp());
+    point.ry() += graphic.yOffsetInTexpage;
+    return point;
 }
